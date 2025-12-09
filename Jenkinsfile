@@ -7,7 +7,7 @@ pipeline {
   }
 
   environment {
-    TOMCAT_HOST = 'YOUR_TOMCAT_HOST_IP'
+    TOMCAT_HOST = '100.28.131.81'
     TOMCAT_USER = 'ubuntu'
     WEBAPPS_DIR = '/opt/tomcat/tomcat10/webapps/'
     SSH_CREDENTIALS_ID = 'ec2-ssh'
@@ -17,7 +17,7 @@ pipeline {
     stage('Checkout') {
       steps {
         checkout([$class: 'GitSCM', branches: [[name: '*/main']],
-          userRemoteConfigs: [[url: 'https://github.com/YOUR_USERNAME/YOUR_REPO.git']]])
+          userRemoteConfigs: [[url: 'https://github.com/Harshitha-Galla5/Java-Login-App.git']]])
       }
     }
 
