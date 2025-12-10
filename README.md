@@ -227,8 +227,8 @@ This document shows a complete, error-free GitHub Actions workflow to **build a 
 4.  **Set Permissions (adjust user if necessary):**
 
     ```bash
-    sudo chown -R ubuntu:ubuntu /opt/tomcat/tomcat10
-    sudo chmod -R 755 /opt/tomcat/tomcat10
+    sudo chown -R ubuntu:ubuntu /opt/tomcat10
+    sudo chmod -R 755 /opt/tomcat10
     ```
 
 5.  **(Recommended) Create Tomcat Systemd Service:**
@@ -245,11 +245,11 @@ This document shows a complete, error-free GitHub Actions workflow to **build a 
     Type=forking
 
     Environment="JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64"
-    Environment="CATALINA_HOME=/opt/tomcat/tomcat10"
-    Environment="CATALINA_BASE=/opt/tomcat/tomcat10"
+    Environment="CATALINA_HOME=/opt/tomcat10"
+    Environment="CATALINA_BASE=/opt/tomcat10"
 
-    ExecStart=/opt/tomcat/tomcat10/bin/startup.sh
-    ExecStop=/opt/tomcat/tomcat10/bin/shutdown.sh
+    ExecStart=/opt/tomcat10/bin/startup.sh
+    ExecStop=/opt/tomcat10/bin/shutdown.sh
 
     Restart=on-failure
 
@@ -265,8 +265,8 @@ This document shows a complete, error-free GitHub Actions workflow to **build a 
 6.  **Ensure `webapps/` is Writable:**
 
     ```bash
-    sudo chmod -R 775 /opt/tomcat/tomcat10/webapps
-    sudo chown -R ubuntu:ubuntu /opt/tomcat/tomcat10/webapps
+    sudo chmod -R 775 /opt/tomcat10/webapps
+    sudo chown -R ubuntu:ubuntu /opt/tomcat10/webapps
     ```
 
 -----
@@ -369,12 +369,12 @@ jobs:
             sudo systemctl restart tomcat
 ```
 
-> **Note on Restart:** If you did not set up the systemd service (Step 1.5), change the `script` in the **Restart Tomcat** step to use the binaries:
+> **Note on Restart:** If you did not set up the systemd service , change the `script` in the **Restart Tomcat** step to use the binaries:
 >
 > ```yaml
 > script: |
->   /opt/tomcat/tomcat10/bin/shutdown.sh || true
->   /opt/tomcat/tomcat10/bin/startup.sh
+>   /opt/tomcat10/bin/shutdown.sh || true
+>   /opt/tomcat10/bin/startup.sh
 > ```
 
 -----
@@ -390,9 +390,9 @@ jobs:
 
   * Check Tomcat logs on EC2:
     ```bash
-    tail -n 200 /opt/tomcat/tomcat10/logs/catalina.out
+    tail -n 200 /opt/tomcat10/logs/catalina.out
     ```
-  * Verify the WAR extracted into `/opt/tomcat/tomcat10/webapps/<appname>/`.
+  * Verify the WAR extracted into `/opt/tomcat10/webapps/<appname>/`.
 
 -----
 
@@ -421,3 +421,275 @@ jobs:
 ## Done
 
 Your GitHub Actions CI/CD pipeline will now automatically build your Maven WAR and deploy it to your EC2 Tomcat instance on every push to `main`.
+
+
+
+
+
+# Jenkins CI/CD: Java WAR Deployment to EC2 Tomcat
+
+This guide provides the required, step-by-step, error-free instructions to implement a Jenkins pipeline for building a Maven Java project and deploying the resulting WAR file to an Apache Tomcat server on EC2.
+
+**(Assumption: You have two separate servers: a Jenkins Host and a Tomcat Host. If using a single server, commands are the same but run on the same machine.)**
+
+## Quick Checklist Before Start
+
+  * Jenkins host is publicly reachable (or from GitHub for webhooks).
+  * SSH access between **Jenkins → Tomcat** is configured (we'll set this up).
+  * You have `sudo` permissions on both servers.
+  * Your GitHub repository contains a Java Maven project and you will add the `Jenkinsfile`.
+
+-----
+
+## A. Install Prerequisites on Jenkins Server (Minimal & Required)
+
+Run these commands as a user with `sudo` access:
+
+```bash
+# update and upgrade system
+sudo apt update && sudo apt upgrade -y
+
+# install Java 17 (required by Jenkins itself and for building Java apps)
+sudo apt install -y openjdk-17-jdk
+
+# install Git and Maven (build tools)
+sudo apt install -y git maven
+
+# verify installations
+java -version
+git --version
+mvn -v
+```
+
+## B. Install Jenkins (Official Package)
+
+Install Jenkins using its official repository to ensure you get the stable release.
+
+```bash
+# 1. Add repository key + source
+curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key | sudo tee /usr/share/keyrings/jenkins-keyring.asc > /dev/null
+echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" | sudo tee /etc/apt/sources.list.d/jenkins.list
+
+# 2. Update and install Jenkins
+sudo apt update
+sudo apt install -y jenkins
+
+# 3. Enable & start the service
+sudo systemctl daemon-reload
+sudo systemctl enable --now jenkins
+
+# 4. Check status
+sudo systemctl status jenkins
+```
+
+### Unlock Jenkins UI
+
+1.  Open your browser: `http://<JENKINS_IP>:8080` (ensure your Security Group/Firewall allows port 8080).
+2.  Fetch the initial admin password:
+    ```bash
+    sudo cat /var/lib/jenkins/secrets/initialAdminPassword
+    ```
+3.  Paste the password into the UI and follow the setup wizard to create an admin user.
+
+## C. Minimal Plugins to Install (Required Only)
+
+Jenkins UI → **Manage Jenkins** → **Manage Plugins** → **Available**
+
+Search for and install the following plugins. Jenkins may require a restart after installation.
+
+  * `Pipeline` (workflow-aggregator)
+  * `Git plugin`
+  * `GitHub plugin`
+  * `Credentials`
+  * `SSH Agent Plugin`
+  * `Maven Integration` (helpful for parsing `pom.xml`)
+
+## D. Global Tool Configuration (Required)
+
+Jenkins UI → **Manage Jenkins** → **Global Tool Configuration**
+
+Configure the tools you installed in Step A:
+
+  * **JDK**
+      * Add JDK → Name: `jdk-17`
+      * **Uncheck** "Install automatically" (since we installed Java system-wide).
+  * **Maven**
+      * Add Maven → Name: `Maven-3`
+      * **Uncheck** "Install automatically".
+  * **Git**
+      * Usually auto-detected. Leave as is, Name: `git`.
+
+Click **Save**.
+
+## E. Create SSH Key for Jenkins & Enable Access to Tomcat
+
+We generate a key pair for the Jenkins service user (`jenkins`) and authorize the public key on the Tomcat host's `ubuntu` user account.
+
+1.  **Generate key on Jenkins server (run as root or ubuntu):**
+
+    ```bash
+    sudo -u jenkins mkdir -p /var/lib/jenkins/.ssh
+    sudo -u jenkins ssh-keygen -t rsa -b 4096 -f /var/lib/jenkins/.ssh/id_rsa -N ""
+    sudo chown -R jenkins:jenkins /var/lib/jenkins/.ssh
+    sudo chmod 700 /var/lib/jenkins/.ssh
+    sudo chmod 600 /var/lib/jenkins/.ssh/id_rsa
+    ```
+
+2.  **Copy public key to Tomcat server:**
+
+    ```bash
+    # Show the key on Jenkins; copy the entire single line of output
+    sudo -u jenkins cat /var/lib/jenkins/.ssh/id_rsa.pub
+    ```
+
+3.  **Add public key to Tomcat server (SSH into Tomcat using your normal PEM):**
+
+    ```bash
+    # on Tomcat host
+    mkdir -p ~/.ssh
+    # Paste the key you copied above into the file
+    echo "paste-copied-public-key-here" >> ~/.ssh/authorized_keys
+    chmod 700 ~/.ssh
+    chmod 600 ~/.ssh/authorized_keys
+    chown ubuntu:ubuntu -R ~/.ssh
+    ```
+
+4.  **Test connection from Jenkins server:**
+
+    ```bash
+    sudo -u jenkins ssh -o StrictHostKeyChecking=no ubuntu@<TOMCAT_IP> 'echo ok'
+    ```
+
+    **Expected Output:** `ok` (If successful, SSH keys are correct.)
+
+## F. Add SSH Private Key to Jenkins Credentials
+
+1.  Jenkins UI → **Credentials** → **System** → **Global credentials** → **Add Credentials**
+2.  **Kind:** SSH Username with private key
+3.  **Username:** `ubuntu` (This is the user on the Tomcat host)
+4.  **Private Key:** **Enter directly** → **paste the full content** of the private key (`id_rsa`):
+    ```bash
+    # On Jenkins server, copy this entire content:
+    sudo cat /var/lib/jenkins/.ssh/id_rsa
+    ```
+5.  **ID:** `ec2-ssh` (Remember this ID, we use it in the Jenkinsfile)
+6.  Click **Save**.
+
+## G. Add `Jenkinsfile` to Your Repo (Pipeline as Code)
+
+Create a file named `Jenkinsfile` in the root of your repository and paste the following content, replacing the placeholders (like URL and IP):
+
+```groovy
+pipeline {
+  agent any
+  // Use tool names defined in Step D
+  tools { jdk 'jdk-17'; maven 'Maven-3' }
+
+  environment {
+    // --- CONFIGURE THESE VARIABLES ---
+    GIT_BRANCH = '*/main'                      // change if branch different
+    TOMCAT_HOST = '54.172.239.166'             // <--- YOUR TOMCAT IP HERE
+    TOMCAT_USER = 'ubuntu'
+    WEBAPPS_DIR = '/opt/tomcat10/webapps/'     // correct WAR deployment path on Tomcat
+    SSH_CREDENTIALS_ID = 'ec2-ssh'             // Credential ID from Step F
+    // ---------------------------------
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout([$class: 'GitSCM',
+          branches: [[name: env.GIT_BRANCH]],
+          userRemoteConfigs: [[url: 'https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPO.git']]]) // <--- YOUR REPO URL HERE
+      }
+    }
+
+    stage('Build') {
+      steps {
+        sh 'mvn -B clean package -DskipTests'
+        archiveArtifacts artifacts: 'target/*.war', fingerprint: true
+      }
+    }
+
+    stage('Deploy') {
+      steps {
+        // Uses the private key stored in Jenkins credentials
+        sshagent (credentials: [env.SSH_CREDENTIALS_ID]) {
+          sh """
+            # Copy WAR to Tomcat webapps folder
+            scp -o StrictHostKeyChecking=no target/*.war ${TOMCAT_USER}@${TOMCAT_HOST}:${WEBAPPS_DIR}
+            # Restart Tomcat service to trigger deployment
+            ssh -o StrictHostKeyChecking=no ${TOMCAT_USER}@${TOMCAT_HOST} 'sudo systemctl restart tomcat'
+          """
+        }
+      }
+    }
+  }
+  post {
+    success { echo 'Deployment successful' }
+    failure { echo 'Deployment failed' }
+  }
+}
+```
+
+**Commit & push this `Jenkinsfile` to your repository.**
+
+## H. Create Jenkins Pipeline Job
+
+1.  Jenkins UI → **New Item** → Name: `app-ci` → Choose **Pipeline** → **OK**
+2.  In the job configuration:
+      * Scroll down to the **Pipeline** section.
+      * **Definition:** `Pipeline script from SCM`
+      * **SCM:** `Git`
+      * **Repository URL:** `https://github.com/YOUR_GITHUB_USERNAME/YOUR_REPO.git`
+      * **Credentials:** (Leave blank for public repo)
+      * **Branch Specifier:** `*/main`
+      * **Script Path:** `Jenkinsfile`
+      * **Build Triggers:** Check `GitHub hook trigger for GITScm polling`
+3.  Click **Save**.
+
+## I. Configure GitHub Webhook
+
+This step ensures a `git push` automatically triggers the Jenkins job.
+
+1.  On your GitHub repo → **Settings** → **Webhooks** → **Add webhook**
+2.  **Payload URL:** `http://<JENKINS_PUBLIC_IP>:8080/github-webhook/`
+3.  **Content type:** `application/json`
+4.  **Which events:** Just the `Push` event
+5.  Click **Add webhook**.
+
+> **Quick Check:** Test by pushing a minor commit. Go to GitHub → Webhooks → check status (should show 200 OK). Jenkins job should trigger automatically.
+
+## J. Run Manual Build Once for Verification
+
+1.  On the Jenkins job (`app-ci`) page → **Build Now**
+2.  Open the Console Output of the running build and watch the stages:
+      * `Checkout` success
+      * `Maven build` success → WAR artifact created
+      * `scp` success (no permission error)
+      * `tomcat restart` success
+
+**Common Quick Fixes:**
+| Error | Fix |
+| :--- | :--- |
+| `Permission denied (publickey)` | Re-run the SSH test (Step E.4) and verify the private key in Jenkins Credentials (Step F). |
+| `No such file or directory` | Correct the `WEBAPPS_DIR` in the `Jenkinsfile` (Step G) to match the Tomcat path. |
+| `tomcat.service failed` | On Tomcat server: `sudo systemctl status tomcat` and verify systemd file (check the previous EC2 guide for the service file). |
+
+## K. Minimal Troubleshooting Commands (Useful)
+
+| Server | Action | Command |
+| :--- | :--- | :--- |
+| **Jenkins** | Test SSH access | `sudo -u jenkins ssh -o StrictHostKeyChecking=no ubuntu@<TOMCAT_IP> 'echo ok'` |
+| **Jenkins** | View private key | `sudo cat /var/lib/jenkins/.ssh/id_rsa` |
+| **Tomcat** | Check WAR presence | `ls -l /opt/tomcat10/webapps/` |
+| **Tomcat** | Check Tomcat logs | `tail -n 200 /opt/tomcat10/logs/catalina.out` |
+
+-----
+
+## Final Notes (Required Best Practices)
+
+  * **Security:** Keep private keys **only** in Jenkins Credentials, never in the repository.
+  * **Pipeline as Code:** Always use the `Jenkinsfile` (Pipeline script from SCM).
+  * **Access:** Limit Security Group/Firewall rules (open 8080 only to trusted IPs).
+
