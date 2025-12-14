@@ -1,0 +1,6 @@
+- name: Setup Kubernetes Node
+  hosts: kubernetes
+  become: yes
+  roles:
+    - common
+    - kubernetes
