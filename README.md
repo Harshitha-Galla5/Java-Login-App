@@ -1444,3 +1444,329 @@ Execute the playbooks from the **Jenkins + Ansible server** (inside the `ansible
 | **Why roles?** | Roles provide a structured, standardized way to organize tasks, variables, and handlers. This promotes **reusability** (e.g., the `common` role) and makes the playbooks clean, readable, and easier to manage—a core DevOps best practice. |
 
 -----
+
+
+Understood.
+Here is the **same documentation**, rewritten **without any emojis**, in a **clean, professional, step-by-step format** suitable for **notes, GitHub README, or interview preparation**.
+
+---
+
+# Kubernetes Cluster Setup Using kubeadm
+
+## End-to-End Step-by-Step Documentation (Zero to Application Access)
+
+---
+
+## 1. Architecture Overview
+
+This setup creates a basic production-like Kubernetes cluster using kubeadm.
+
+### Cluster Components
+
+* One Master (Control Plane) node
+* One Worker node
+* Operating System: Ubuntu 20.04 or 22.04
+* Container Runtime: containerd
+* CNI Plugin: Calico
+* Application: Java (Tomcat-based)
+* Service Exposure: NodePort
+
+---
+
+## 2. Why kubeadm Instead of minikube
+
+* minikube is intended only for local development
+* kubeadm uses real Kubernetes components
+* kubeadm setup closely matches managed Kubernetes services like EKS
+* Suitable for DevOps learning and interviews
+
+---
+
+## 3. Prerequisites (Run on Both Master and Worker Nodes)
+
+### 3.1 Disable Swap
+
+Kubernetes requires swap to be disabled for predictable scheduling.
+
+```bash
+sudo swapoff -a
+sudo sed -i '/ swap / s/^/#/' /etc/fstab
+```
+
+Verify:
+
+```bash
+free -h
+```
+
+---
+
+### 3.2 Load Required Kernel Modules
+
+```bash
+sudo modprobe overlay
+sudo modprobe br_netfilter
+```
+
+Make permanent:
+
+```bash
+cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+overlay
+br_netfilter
+EOF
+```
+
+---
+
+### 3.3 Configure Kernel Networking Parameters
+
+```bash
+cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-iptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward = 1
+EOF
+```
+
+Apply changes:
+
+```bash
+sudo sysctl --system
+```
+
+Verify:
+
+```bash
+sysctl net.ipv4.ip_forward
+```
+
+Expected output:
+
+```
+= 1
+```
+
+---
+
+## 4. Install Container Runtime (containerd)
+
+### 4.1 Install containerd
+
+```bash
+sudo apt update
+sudo apt install -y containerd
+```
+
+---
+
+### 4.2 Generate Default containerd Configuration
+
+```bash
+sudo mkdir -p /etc/containerd
+sudo containerd config default | sudo tee /etc/containerd/config.toml
+```
+
+Restart and enable:
+
+```bash
+sudo systemctl restart containerd
+sudo systemctl enable containerd
+```
+
+---
+
+## 5. Install Kubernetes Components (Both Nodes)
+
+### 5.1 Install Required Packages
+
+```bash
+sudo apt install -y apt-transport-https ca-certificates curl
+```
+
+---
+
+### 5.2 Add Kubernetes Repository
+
+```bash
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.28/deb/Release.key | \
+sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+```
+
+```bash
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] \
+https://pkgs.k8s.io/core:/stable:/v1.28/deb/ /" | \
+sudo tee /etc/apt/sources.list.d/kubernetes.list
+```
+
+---
+
+### 5.3 Install kubeadm, kubelet, and kubectl
+
+```bash
+sudo apt update
+sudo apt install -y kubelet kubeadm kubectl
+sudo apt-mark hold kubelet kubeadm kubectl
+```
+
+---
+
+## 6. Master Node Setup
+
+### 6.1 Initialize the Kubernetes Cluster
+
+Run only on the master node.
+
+```bash
+sudo kubeadm init --pod-network-cidr=192.168.0.0/16
+```
+
+Save the kubeadm join command for the worker node.
+
+---
+
+### 6.2 Configure kubectl Access
+
+```bash
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+```
+
+Verify:
+
+```bash
+kubectl cluster-info
+```
+
+---
+
+## 7. Install Calico CNI
+
+Calico enables pod-to-pod networking.
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calico.yaml
+```
+
+Verify:
+
+```bash
+kubectl get pods -n kube-system
+```
+
+All pods should be in the Running state.
+
+---
+
+## 8. Worker Node Setup
+
+### 8.1 Join the Cluster
+
+Run only on the worker node.
+
+```bash
+sudo kubeadm join <MASTER-IP>:6443 \
+--token <TOKEN> \
+--discovery-token-ca-cert-hash sha256:<HASH>
+```
+
+---
+
+## 9. Verify Cluster Status
+
+Run on the master node.
+
+```bash
+kubectl get nodes
+```
+
+Both nodes should show status Ready.
+
+---
+
+## 10. Deploy Java Application (Master Node Only)
+
+### 10.1 Clone the Application Repository
+
+```bash
+git clone https://github.com/<your-repository>.git
+cd Java-Login-App/k8s
+```
+
+---
+
+### 10.2 Apply Kubernetes Manifests
+
+```bash
+kubectl apply -f deployment.yaml
+kubectl apply -f service.yaml
+```
+
+---
+
+### 10.3 Verify Deployment
+
+```bash
+kubectl get pods -o wide
+kubectl get svc
+```
+
+Confirm that the service type is NodePort.
+
+---
+
+## 11. Expose Application Using NodePort
+
+### 11.1 Configure EC2 Security Group
+
+Open the NodePort on the worker node.
+
+Inbound rule example:
+
+* Protocol: TCP
+* Port: 30080
+* Source: 0.0.0.0/0
+
+---
+
+### 11.2 Access the Application
+
+Java Tomcat applications do not run on the root path.
+
+Use the correct context path.
+
+```text
+http://<WORKER_PUBLIC_IP>:30080/<context-path>
+```
+
+Example:
+
+```text
+http://13.xxx.xxx.xxx:30080/login
+```
+
+---
+
+## 12. Common Errors and Fixes
+
+### kubectl localhost:8080 refused
+
+* Cause: kubectl executed on worker node
+* Fix: run kubectl only on master node
+
+---
+
+### NodePort not accessible externally
+
+* Cause: EC2 security group does not allow NodePort
+* Fix: open NodePort or 30000–32767 range
+
+---
+
+### HTTP 404 Not Found
+
+* Cause: wrong application context path
+* Fix: use the correct Tomcat context path
+
+---
